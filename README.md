@@ -1,10 +1,10 @@
-# Auditable Explanations for Financial-Crime Compliance
+# TrustFCC: Benchmarking Reporting Decisions and Explanations in Financial-Crime Compliance
 
 Code for a matched-twin benchmark of **auditable explanations** across anti-money-laundering (AML) and market abuse. Each scenario is scored against a four-element rubric — **mechanism**, the **rule that is defeated** (loophole in AML, breach in market abuse), the **distinguishing** facts that separate a violation from its innocent twin, and the **decision** (REPORT / PROCEED / CLEAR) — rather than a yes/no label.
 
 *Anonymous repository for peer review. It contains no real customer, transaction, or account data; every scenario is synthetic.*
 
-The dataset (10,057 matched pairs = 20,114 scenarios, plus expert seeds) is released separately: **https://huggingface.co/datasets/Anonymousbabygoat/auditable-fincrime-benchmark**.
+The dataset (10,057 matched pairs = 20,114 scenarios, plus expert seeds) is released separately: **https://huggingface.co/datasets/Anonymousbabygoat/TrustFCC**.
 
 ## Pipeline
 
