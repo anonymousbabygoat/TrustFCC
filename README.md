@@ -31,6 +31,39 @@ The dataset (10,057 matched pairs = 20,114 scenarios, plus expert seeds) is rele
 
 6. **Prompting frontier models + APO.** An innocent-first prompt (Contrast in AML, Innocent-Hypothesis-First in market abuse) builds the innocent twin before naming the distinguishing facts; automatic prompt optimization (DSPy MIPROv2) is run from a bare seed as a comparison (`dspy_apo_aml.py`, `dspy_apo_market.py`).
 
+## Training-data settings and the larger test set
+
+**Training-data settings.** Four settings share the LoRA recipe, validation file, test cases and judge, and differ only in the training file:
+
+| Setting | Training file | Built by | Launcher | Answer files |
+|---|---|---|---|---|
+| Synthetic | `aml90_sft_train.jsonl`, `market75_sft_train.jsonl` | scalers + SFT builders | `run_aml_sft.pbs` | `*_LORA_answers.csv` |
+| Expert Seeds | `aml_expert_sft_train.jsonl` (180 records), `market_expert_sft_train.jsonl` (150) | `build_expert_sft.py` | `run_expert_aml.pbs`, `run_expert_market.pbs` | `*_EXPERT_answers.csv` |
+| Synthetic + Seeds | `aml_mix_sft_train.jsonl` (9,874), `market_mix_sft_train.jsonl` (9,666) | `build_mix_sft.py` | `run_mix_aml.pbs`, `run_mix_market.pbs` | `*_MIX_answers.csv` |
+| Synthetic + Rewritten (AML) | `aml_mixexp_sft_train.jsonl` (9,874) | `rewrite_expert_targets.py`, then `build_mixexp_sft.py` | `run_mixexp_aml.pbs` | `*_MIXEXP_answers.csv` |
+
+`rewrite_expert_targets.py` rewrites the 180 AML seed answers at the length and detail of the synthetic answers with Claude Sonnet 5, keeping every decision, typology and fact (checks: same DECISION and TYPOLOGY lines, five answer lines, 700 to 1,800 characters; up to three attempts, otherwise the original answer is kept). The rewritten answers are released with the dataset (`aml_seed_answers_rewritten.jsonl`). `patch_eval_split.py` adds the `EVAL_SPLIT=unseen` switch used by the launchers.
+
+**Grading the expert test set (all settings, one judge pass).** `rescore_shared_heldout.py` scores every open-model setting and every frontier prompt on the same 30 AML and 25 market-abuse expert pairs (`heldout_ids.json`, `rubrics_aml.json`, `rubrics_market.json`). The judge prompt is the one reproduced in the paper's appendix. Open-model answers are judged on their first complete answer: text generated after the end of the answer is cut before judging (`--keep-runon` judges the raw text).
+
+```bash
+export SB_API_KEY=...   # judge key (not stored)
+python3 rescore_shared_heldout.py --results-dir <folder with the answer CSVs> --outdir out \
+        --include-base --include-expert --include-mix --include-mixexp
+```
+
+**Larger synthetic test set (889 AML and 721 market-abuse pairs).** The pairs are generated from the 55 held-out typologies with the same scalers (`SC_SPLIT=unseen`) and released with the dataset (`aml_test.csv.gz`, `market_test.csv.gz`).
+
+```bash
+python3 make_test_items.py                                   # csv.gz -> test_items_<domain>.json (case text only)
+DOMAIN=aml BASE_MODEL=... LORA_DIR=... python eval_synth_test.py     # fine-tuned open models (run_synthtest_qwen7b.pbs)
+python3 run_frontier_synth_test.py --model deepseek          # frontier reference, Baseline prompt
+python3 grade_synth_test.py                                  # same judge; writes synthtest_summary.csv
+```
+
+`grade_synth_test.py` uses each pair's generated reference explanation as the rubric. For market abuse, the generated list of decoys is removed from the rubric before judging (`--rubric paper`, the default), so the judge sees the same content as on the expert test set.
+
+
 ## Contents
 
 | File | Purpose |
@@ -43,6 +76,11 @@ The dataset (10,057 matched pairs = 20,114 scenarios, plus expert seeds) is rele
 | `grade_market_2way.py` | Per-element judge grader, all models (base vs LoRA); loads `grade_rubrics_market.json` |
 | `dspy_apo_aml.py`, `dspy_apo_market.py` | Automatic prompt optimization (DSPy MIPROv2); load `apo_bundle_*`/`apo_rubrics_*` |
 | `run_*.pbs`, `download_models.pbs` | Cluster launchers (representative) |
+| `build_expert_sft.py`, `build_mix_sft.py`, `build_mixexp_sft.py`, `rewrite_expert_targets.py` | Training files for Expert Seeds, Synthetic + Seeds, Synthetic + Rewritten |
+| `synthetic_train_sample*.jsonl` | Style examples shown to the rewriter |
+| `run_expert_*.pbs`, `run_mix_*.pbs`, `run_mixexp_aml.pbs`, `run_synthtest_qwen7b.pbs`, `patch_eval_split.py` | Cluster launchers (representative) |
+| `rescore_shared_heldout.py`, `heldout_ids.json`, `rubrics_*.json` | Expert-test-set grader, all settings |
+| `make_test_items.py`, `eval_synth_test.py`, `run_frontier_synth_test.py`, `grade_synth_test.py` | Larger synthetic test set: evaluation and grading |
 
 ## Requirements
 
