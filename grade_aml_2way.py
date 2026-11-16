@@ -6,7 +6,7 @@ checked directly; a scenario is fully correct only when all three elements pass 
 Usage:
   export SB_API_KEY=...            # judge key (not stored)
   export SB_JUDGE_BASE=https://api.anthropic.com/v1/   SB_JUDGE_MODEL=claude-sonnet-5
-  export SB_RUBRICS=apo_rubrics_aml.json   SB_DIR=.    SB_SCOPE=unseen   # or all
+  export SB_RUBRICS=grade_rubrics_aml.json   SB_DIR=.    SB_SCOPE=unseen   # or all
   # reads aml90_2way_BASE_answers.csv and aml90_2way_LORA_answers.csv from SB_DIR
   python3 grade_aml_2way.py           # add --smoke to self-test the judge
 """
