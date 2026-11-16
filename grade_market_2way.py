@@ -4,7 +4,9 @@ One judge-model call per reasoning element (mechanism, breach, distinguishing); 
 directly; a scenario is fully correct only when all three elements pass and the decision is right.
 
 Incremental: grades only models not already present in market75_sweep_results.csv (set SB_FORCE to
-re-grade). Mirrors grade_aml_2way.py; the judge logic (judge_elem) is identical.
+re-grade). Mirrors grade_aml_2way.py; the judge logic (judge_elem) is identical. The judge prompt
+(JSYS, LABELS) is the market-abuse prompt reproduced in the paper's appendix, the same as in
+rescore_shared_heldout.py and grade_synth_test.py.
 
 Usage:
   export SB_API_KEY=...            # judge key (not stored)
@@ -30,13 +32,11 @@ TAGS = [
  ("mistral7b","market75_2way_mistral7b_BASE_answers.csv","market75_2way_mistral7b_LORA_answers.csv"),
 ]
 
-JSYS = ("You are a strict Singapore market-abuse examiner. You are shown the correct rubric and an analyst's full answer, "
-        "and asked about ONE element only. Judge only that element; ignore whether the other elements are present. A vague "
-        "or generic statement does not earn it.")
+JSYS = "You are a strict Singapore market-surveillance examiner. You are shown the correct rubric and an analyst's full answer, and asked about ONE element only. Judge only that element; ignore the others. A vague or generic statement does not earn it."
 LABELS = {
- "mech": "MECHANISM - the specific abusive trading/order move (not a generic label like 'spoofing')",
- "breach": "BREACH - the specific statutory provision breached and WHY its purpose is defeated (cite SFA s.197/198/201 / MAR Art 8/12/15 / IOSCO)",
- "distinguishing": "DISTINGUISHING - what a genuine legitimate participant would show here that this one does NOT (the contrast with the innocent look-alike)",
+ 'mech': "MECHANISM - the specific market-abuse method (e.g. spoofing, layering, wash trading, marking the close), not a generic label like 'manipulation'",
+ 'breach': 'BREACH - why the conduct breaches market-conduct rules: it creates a FALSE or MISLEADING appearance of the market, OR misuses material non-public information / evades a disclosure obligation',
+ 'distinguishing': 'DISTINGUISHING - what a legitimate look-alike (registered market maker, hedger, arbitrageur, genuine benchmarked order) would show here that this trader does NOT',
 }
 def four_points(r): return r.split("ANSWER KEY")[0].strip()
 

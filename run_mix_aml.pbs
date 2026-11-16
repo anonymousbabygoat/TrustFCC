@@ -1,0 +1,60 @@
+#!/bin/bash
+#PBS -N mix_aml
+#PBS -P YOUR_PROJECT_ID
+#PBS -l select=1:ncpus=8:ngpus=1:mem=96gb
+#PBS -l walltime=50:00:00
+#PBS -q v100q
+#PBS -j oe
+#PBS -o mix_aml.log
+
+# Synthetic + Seeds, AML: fine-tune the seven open models on the synthetic training set plus the expert seed pairs of the
+# training typologies (aml_mix_sft_train.jsonl = 9,694 synthetic + 180 expert records, built by build_mix_sft.py). Same LoRA
+# recipe and validation file as the Synthetic setting; answers on the held-out test cases -> aml90_2way_<tag>_MIX_answers.csv.
+# Resumable (adapter present -> no training; finished CSV present -> no eval).
+echo "=== MIXED (synthetic + expert) AML SFT + eval, 7 models ==="; echo "Started: $(date)"
+cd $PBS_O_WORKDIR
+nvidia-smi --query-gpu=index,name,memory.total --format=csv
+export BSZ=${BSZ:-4} GRAD_ACCUM=${GRAD_ACCUM:-4} EPOCHS=${EPOCHS:-3}
+echo "BSZ=$BSZ GRAD_ACCUM=$GRAD_ACCUM EPOCHS=$EPOCHS"
+
+SING=$(command -v singularity || echo /usr/local/bin/singularity)
+$SING exec --nv /app/singularity/images/pytorch_24.06-py3.sif bash -c '
+  # training uses the exact stack of the paper (transformers 4.44.2 / tokenizers 0.19.1 / peft 0.12.0 / accelerate 0.33.0),
+  # installed once into $HOME/pkg_train4442 . Eval keeps ~/.local (4.46.3).
+  PKG=$HOME/pkg_train4442
+  if [ ! -f $PKG/transformers/__init__.py ]; then pip install -q --no-deps --target=$PKG transformers==4.44.2 tokenizers==0.19.1 peft==0.12.0 accelerate==0.33.0 || echo "pip install into $PKG failed"; fi
+  PYTHONPATH=$PKG python -c "import transformers,accelerate,peft,tokenizers;print(\"train stack:\",transformers.__version__,accelerate.__version__,peft.__version__,tokenizers.__version__)"
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+  export TRAIN_FILE=aml_mix_sft_train.jsonl VAL_FILE=aml90_sft_val.jsonl
+  export MAX_SEQ=1536 LR=2e-4 MAX_NEW=512 EVAL_SPLIT=unseen
+  run_one() {
+    tag=$1
+    case $tag in
+      qwen3b) export BASE_MODEL=$HOME/.cache/modelscope/hub/models/Qwen/Qwen2___5-3B-Instruct ;;
+      qwen7b) export BASE_MODEL=$HOME/.cache/modelscope/hub/models/Qwen/Qwen2___5-7B-Instruct ;;
+      *)      export BASE_MODEL=$HOME/models/$tag ;;
+    esac
+    export OUT_DIR=aml_mix_${tag}_lora LORA_DIR=aml_mix_${tag}_lora/best_lora
+    FINAL=aml90_2way_${tag}_MIX_answers.csv
+    echo; echo "##### $tag  $(date)  GPU=$CUDA_VISIBLE_DEVICES  BASE_MODEL=$BASE_MODEL"
+    if [ -f $FINAL ]; then echo "  $FINAL exists, skip"; return; fi
+    LOCK=.lock_aml_mix_$tag
+    if [ -d $LOCK ] && [ -z "$(find $LOCK -maxdepth 0 -mmin +1500)" ]; then echo "  locked by another live job ($(cat $LOCK/owner 2>/dev/null)), skip"; return; fi
+    rm -rf $LOCK; mkdir $LOCK || { echo "  could not take lock, skip"; return; }; echo "$PBS_JOBID $(hostname) $(date)" > $LOCK/owner
+    if [ -f $LORA_DIR/adapter_config.json ]; then echo "  adapter exists, skip training";
+    else touch $LOCK; PYTHONPATH=$PKG python train_aml_sft.py || { echo "  TRAIN FAILED for $tag"; rm -rf $LOCK; return; }; fi
+    touch $LOCK
+    if [ -f $FINAL ]; then echo "  $FINAL exists, skip eval";
+    else USE_LORA=1 OUT_CSV=$FINAL.part python eval_aml90_2way.py && mv $FINAL.part $FINAL || echo "  EVAL FAILED for $tag"; fi
+    rm -rf $LOCK; echo "  done $tag  $(date)"
+  }
+  MODELS=(gemma9b llama8b qwen7b mistral7b qwen3b llama3b gemma2b)   # heavy first, so GPUs stay balanced
+  NG=$(nvidia-smi -L | wc -l); echo "GPUs in job: $NG"
+  for ((g=0; g<NG; g++)); do
+    ( export CUDA_VISIBLE_DEVICES=$g
+      for ((i=g; i<${#MODELS[@]}; i+=NG)); do run_one ${MODELS[$i]}; done ) > mix_aml_gpu$g.log 2>&1 &
+  done
+  wait
+  echo; echo "all done"; cat mix_aml_gpu*.log | grep -E "^#####|done |FAILED|skip"; ls -la aml90_2way_*_MIX_answers.csv'
+
+echo "Finished: $(date)"

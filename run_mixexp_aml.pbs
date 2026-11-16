@@ -1,0 +1,60 @@
+#!/bin/bash
+#PBS -N mixexp_aml
+#PBS -P YOUR_PROJECT_ID
+#PBS -l select=1:ncpus=8:ngpus=1:mem=96gb
+#PBS -l walltime=50:00:00
+#PBS -q v100q
+#PBS -j oe
+#PBS -o mixexp_aml.log
+
+# Synthetic + Rewritten, AML only: as run_mix_aml.pbs, but the 180 expert records are rewritten at the length and detail of
+# the synthetic answers (aml_mixexp_sft_train.jsonl, built by build_mixexp_sft.py). All seven models:
+#   qsub -v MIXEXP_MODELS="gemma9b llama8b qwen7b mistral7b qwen3b llama3b gemma2b" run_mixexp_aml.pbs
+# -> aml90_2way_<tag>_MIXEXP_answers.csv.
+echo "=== MIXEXP: synthetic + REWRITTEN expert AML SFT + eval, 3 models ==="; echo "Started: $(date)"
+cd $PBS_O_WORKDIR
+nvidia-smi --query-gpu=index,name,memory.total --format=csv
+export BSZ=${BSZ:-4} GRAD_ACCUM=${GRAD_ACCUM:-4} EPOCHS=${EPOCHS:-3}
+echo "BSZ=$BSZ GRAD_ACCUM=$GRAD_ACCUM EPOCHS=$EPOCHS"
+
+SING=$(command -v singularity || echo /usr/local/bin/singularity)
+$SING exec --nv /app/singularity/images/pytorch_24.06-py3.sif bash -c '
+  # training uses the exact stack of the paper (transformers 4.44.2 / tokenizers 0.19.1 / peft 0.12.0 / accelerate 0.33.0),
+  # installed once into $HOME/pkg_train4442 . Eval keeps ~/.local (4.46.3).
+  PKG=$HOME/pkg_train4442
+  if [ ! -f $PKG/transformers/__init__.py ]; then pip install -q --no-deps --target=$PKG transformers==4.44.2 tokenizers==0.19.1 peft==0.12.0 accelerate==0.33.0 || echo "pip install into $PKG failed"; fi
+  PYTHONPATH=$PKG python -c "import transformers,accelerate,peft,tokenizers;print(\"train stack:\",transformers.__version__,accelerate.__version__,peft.__version__,tokenizers.__version__)"
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+  export TRAIN_FILE=aml_mixexp_sft_train.jsonl VAL_FILE=aml90_sft_val.jsonl
+  export MAX_SEQ=1536 LR=2e-4 MAX_NEW=512 EVAL_SPLIT=unseen
+  run_one() {
+    tag=$1
+    case $tag in
+      qwen3b) export BASE_MODEL=$HOME/.cache/modelscope/hub/models/Qwen/Qwen2___5-3B-Instruct ;;
+      qwen7b) export BASE_MODEL=$HOME/.cache/modelscope/hub/models/Qwen/Qwen2___5-7B-Instruct ;;
+      *)      export BASE_MODEL=$HOME/models/$tag ;;
+    esac
+    export OUT_DIR=aml_mixexp_${tag}_lora LORA_DIR=aml_mixexp_${tag}_lora/best_lora
+    FINAL=aml90_2way_${tag}_MIXEXP_answers.csv
+    echo; echo "##### $tag  $(date)  GPU=$CUDA_VISIBLE_DEVICES  BASE_MODEL=$BASE_MODEL"
+    if [ -f $FINAL ]; then echo "  $FINAL exists, skip"; return; fi
+    LOCK=.lock_aml_mixexp_$tag
+    if [ -d $LOCK ] && [ -z "$(find $LOCK -maxdepth 0 -mmin +1500)" ]; then echo "  locked by another live job ($(cat $LOCK/owner 2>/dev/null)), skip"; return; fi
+    rm -rf $LOCK; mkdir $LOCK || { echo "  could not take lock, skip"; return; }; echo "$PBS_JOBID $(hostname) $(date)" > $LOCK/owner
+    if [ -f $LORA_DIR/adapter_config.json ]; then echo "  adapter exists, skip training";
+    else touch $LOCK; PYTHONPATH=$PKG python train_aml_sft.py || { echo "  TRAIN FAILED for $tag"; rm -rf $LOCK; return; }; fi
+    touch $LOCK
+    if [ -f $FINAL ]; then echo "  $FINAL exists, skip eval";
+    else USE_LORA=1 OUT_CSV=$FINAL.part python eval_aml90_2way.py && mv $FINAL.part $FINAL || echo "  EVAL FAILED for $tag"; fi
+    rm -rf $LOCK; echo "  done $tag  $(date)"
+  }
+  MODELS=(${MIXEXP_MODELS:-gemma9b qwen7b mistral7b})   # override with qsub -v MIXEXP_MODELS="gemma9b"
+  NG=$(nvidia-smi -L | wc -l); echo "GPUs in job: $NG"
+  for ((g=0; g<NG; g++)); do
+    ( export CUDA_VISIBLE_DEVICES=$g
+      for ((i=g; i<${#MODELS[@]}; i+=NG)); do run_one ${MODELS[$i]}; done ) > mixexp_aml_gpu$g.log 2>&1 &
+  done
+  wait
+  echo; echo "all done"; cat mixexp_aml_gpu*.log | grep -E "^#####|done |FAILED|skip"; ls -la aml90_2way_*_MIXEXP_answers.csv'
+
+echo "Finished: $(date)"

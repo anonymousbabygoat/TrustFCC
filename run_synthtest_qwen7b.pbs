@@ -1,0 +1,29 @@
+#!/bin/bash
+#PBS -N synthtest_qwen7b
+#PBS -P YOUR_PROJECT_ID
+#PBS -l select=1:ncpus=8:ngpus=1:mem=96gb
+#PBS -l walltime=16:00:00
+#PBS -q v100q
+#PBS -j oe
+#PBS -o synthtest_qwen7b.log
+
+# Fine-tuned Qwen2.5-7B (base + LoRA) on the larger synthetic test set (representative launcher; other models differ
+# only in BASE_MODEL / LORA_DIR). Needs eval_synth_test.py, test_items_aml.json, test_items_market.json in the working folder.
+echo "=== synthetic TEST split eval: qwen7b (LoRA) ==="
+echo "Started: $(date)"
+cd $PBS_O_WORKDIR
+nvidia-smi --query-gpu=index,name,memory.total --format=csv
+
+/usr/local/bin/singularity exec --nv /app/singularity/images/pytorch_24.06-py3.sif bash -c "
+  pip install -q --no-deps --target=\$HOME/scratch/pkg_synth_qwen7b transformers==4.44.2 peft==0.12.0 accelerate==0.33.0 2>/dev/null || true;
+  export PYTHONPATH=\$HOME/scratch/pkg_synth_qwen7b:\$PYTHONPATH &&
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 &&
+  export BASE_MODEL=\$HOME/.cache/modelscope/hub/models/Qwen/Qwen2___5-7B-Instruct BATCH=8 USE_LORA=1 &&
+  echo '--- AML ---' &&
+  DOMAIN=aml LORA_DIR=aml90_qwen7b_lora/best_lora MAX_NEW=512 OUT_CSV=synthtest_aml_qwen7b_LORA_answers.csv python eval_synth_test.py &&
+  if [ -f test_items_market.json ]; then
+    echo '--- MARKET ---' &&
+    DOMAIN=market LORA_DIR=market75_qwen7b_lora/best_lora MAX_NEW=1024 OUT_CSV=synthtest_market_qwen7b_LORA_answers.csv python eval_synth_test.py;
+  else echo 'test_items_market.json not present - market skipped'; fi"
+
+echo "Finished: $(date)"
